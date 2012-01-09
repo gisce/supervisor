@@ -291,8 +291,8 @@ class Supervisor:
                 self.reap() # keep reaping until no more kids to reap
 
     def handle_signal(self):
-        if self.options.signal:
-            sig, self.options.signal = self.options.signal, None
+        sig = self.options.get_signal()
+        if sig:
             if sig in (signal.SIGTERM, signal.SIGINT, signal.SIGQUIT):
                 self.options.logger.warn(
                     'received %s indicating exit request' % signame(sig))
@@ -313,7 +313,7 @@ class Supervisor:
             else:
                 self.options.logger.blather(
                     'received %s indicating nothing' % signame(sig))
-        
+
     def get_state(self):
         return self.options.mood
 
@@ -322,15 +322,15 @@ def timeslice(period, when):
 
 # profile entry point
 def profile(cmd, globals, locals, sort_order, callers):
-    import profile
+    try:
+        import cProfile as profile
+    except ImportError:
+        import profile # python < 2.5
     import pstats
     import tempfile
     fd, fn = tempfile.mkstemp()
     try:
-        if hasattr(profile, 'runctx'):
-            profile.runctx(cmd, globals, locals, fn)
-        else:
-            raise NotImplementedError('No profiling support under Python 2.3')
+        profile.runctx(cmd, globals, locals, fn)
         stats = pstats.Stats(fn)
         stats.strip_dirs()
         # calls,time,cumulative and cumulative,calls,time are useful
