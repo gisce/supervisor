@@ -622,7 +622,7 @@ class ServerOptions(Options):
                     result_handler, section))
             pool_event_names = [x.upper() for x in
                                 list_of_strings(get(section, 'events', ''))]
-            pool_event_names = dedupe(pool_event_names)
+            pool_event_names = set(pool_event_names)
             if not pool_event_names:
                 raise ValueError('[%s] section requires an "events" line' %
                                  section)
@@ -1121,7 +1121,7 @@ class ServerOptions(Options):
     def dropPrivileges(self, user):
         # Drop root privileges if we have them
         if user is None:
-            return "No used specified to setuid to!"
+            return "No user specified to setuid to!"
         if os.getuid() != 0:
             return "Can't drop privilege as nonroot user"
         try:
@@ -1919,12 +1919,6 @@ def split_namespec(namespec):
         # group name is same as process name
         group_name, process_name = namespec, namespec
     return group_name, process_name
-
-def dedupe(L):
-    D = {}
-    for thing in L:
-        D[thing] = 1
-    return D.keys()
 
 # exceptions
 

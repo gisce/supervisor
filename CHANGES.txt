@@ -6,6 +6,10 @@ Next release
 
 - Removed the unused "supervisor_rpc" entry point from setup.py.
 
+- Fixed a bug in the rotating log handler that would cause unexpected
+  results when two processes were set to log to the same file.  Patch
+  by Whit Morriss.
+
 3.0a12 (2011-12-06)
 -------------------
 
@@ -59,6 +63,11 @@ Next release
 
 - Updated the output of ``echo_supervisord_conf`` to fix typos and
   improve comments.  Thanks to Jens Rantil for noticing these.
+
+- Fixed a possible 500 Server Error from the web interface.  This was
+  observed when using Supervisor on a domain socket behind Nginx, where
+  Supervisor would raise an exception because REMOTE_ADDR was not set.
+  Patch by David Bennett.
 
 3.0a10 (2011-03-30)
 -------------------
@@ -987,15 +996,3 @@ Next release
 - 2.X versions of supervisorctl will work against supervisor 3.0
   servers in a degraded fashion, but 3.X versions of supervisorctl
   will not work at all against supervisor 2.X servers.
-
-Known issues
-~~~~~~~~~~~~
-
-- supervisorctl and the web interface do not yet allow you to stop
-  / start / restart a process group as a unit.
-
-- supervisorctl and the web interface do not allow you to tail or
-  otherwise examine stderr log files of processes.
-
-- buffered event notifications may be lost at supervisor shutdown
-  or restart time.
