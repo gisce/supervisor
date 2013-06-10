@@ -10,6 +10,7 @@ from supervisor.options import NotFound
 from supervisor.options import NoPermission
 from supervisor.options import make_namespec
 from supervisor.options import split_namespec
+from supervisor.options import VERSION
 
 from supervisor.events import notify
 from supervisor.events import RemoteCommunicationEvent
@@ -53,8 +54,7 @@ class SupervisorNamespaceRPCInterface:
         @return string version version id
         """
         self._update('getSupervisorVersion')
-        import options
-        return options.VERSION
+        return VERSION
 
     def getIdentification(self):
         """ Return identifiying string of supervisord
@@ -81,7 +81,7 @@ class SupervisorNamespaceRPCInterface:
 
     def getPID(self):
         """ Return the PID of supervisord
-        
+
         @return int PID
         """
         self._update('getPID')
@@ -147,7 +147,7 @@ class SupervisorNamespaceRPCInterface:
         @return boolean result  always return True unless error
         """
         self._update('restart')
-        
+
         self.supervisord.options.mood = SupervisorStates.RESTARTING
         return True
 
@@ -159,10 +159,10 @@ class SupervisorNamespaceRPCInterface:
         """
         self._update('reloadConfig')
         try:
-            self.supervisord.options.process_config_file(do_usage=False)
+            self.supervisord.options.process_config(do_usage=False)
         except ValueError, msg:
             raise RPCError(Faults.CANT_REREAD, msg)
-            
+
         added, changed, removed = self.supervisord.diff_to_active()
 
         added = [group.name for group in added]
@@ -242,9 +242,9 @@ class SupervisorNamespaceRPCInterface:
         process = group.processes.get(process_name)
         if process is None:
             raise RPCError(Faults.BAD_NAME, name)
-        
+
         return group, process
-        
+
     def startProcess(self, name, wait=True):
         """ Start a process
 
@@ -292,7 +292,7 @@ class SupervisorNamespaceRPCInterface:
 
             if not wait or not startsecs:
                 return True
-                
+
             t = time.time()
             runtime = (t - started[0])
             state = process.get_state()
@@ -315,9 +315,9 @@ class SupervisorNamespaceRPCInterface:
     def startProcessGroup(self, name, wait=True):
         """ Start all processes in the group named 'name'
 
-        @param string name        The group name
-        @param boolean wait       Wait for each process to be fully started
-        @return struct result     A structure containing start statuses
+        @param string name     The group name
+        @param boolean wait    Wait for each process to be fully started
+        @return array result   An array of process status info structs
         """
         self._update('startProcessGroup')
 
@@ -332,7 +332,7 @@ class SupervisorNamespaceRPCInterface:
 
         startall = make_allfunc(processes, isNotRunning, self.startProcess,
                                 wait=wait)
-            
+
         startall.delay = 0.05
         startall.rpcinterface = self
         return startall # deferred
@@ -340,8 +340,8 @@ class SupervisorNamespaceRPCInterface:
     def startAllProcesses(self, wait=True):
         """ Start all processes listed in the configuration file
 
-        @param boolean wait Wait for each process to be fully started
-        @return struct result     A structure containing start statuses
+        @param boolean wait    Wait for each process to be fully started
+        @return array result   An array of process status info structs
         """
         self._update('startAllProcesses')
 
@@ -383,12 +383,12 @@ class SupervisorNamespaceRPCInterface:
                 if msg is not None:
                     raise RPCError(Faults.FAILED, msg)
                 stopped.append(1)
-                
+
                 if wait:
                     return NOT_DONE_YET
                 else:
                     return True
-            
+
             if process.get_state() not in (ProcessStates.STOPPED,
                                            ProcessStates.EXITED):
                 return NOT_DONE_YET
@@ -402,12 +402,12 @@ class SupervisorNamespaceRPCInterface:
     def stopProcessGroup(self, name, wait=True):
         """ Stop all processes in the process group named 'name'
 
-        @param string name  The group name
+        @param string name     The group name
         @param boolean wait    Wait for each process to be fully stopped
-        @return boolean result Always return true unless error.
+        @return array result   An array of process status info structs
         """
         self._update('stopProcessGroup')
-        
+
         group = self.supervisord.process_groups.get(name)
 
         if group is None:
@@ -419,7 +419,7 @@ class SupervisorNamespaceRPCInterface:
 
         killall = make_allfunc(processes, isRunning, self.stopProcess,
                                wait=wait)
-            
+
         killall.delay = 0.05
         killall.rpcinterface = self
         return killall # deferred
@@ -427,11 +427,11 @@ class SupervisorNamespaceRPCInterface:
     def stopAllProcesses(self, wait=True):
         """ Stop all processes in the process list
 
-        @param boolean wait    Wait for each process to be fully stopped
-        @return boolean result Always return true unless error.
+        @param  boolean wait   Wait for each process to be fully stopped
+        @return array result   An array of process status info structs
         """
         self._update('stopAllProcesses')
-        
+
         processes = self._getAllProcesses()
 
         killall = make_allfunc(processes, isRunning, self.stopProcess,
@@ -442,10 +442,10 @@ class SupervisorNamespaceRPCInterface:
         return killall # deferred
 
     def getAllConfigInfo(self):
-        """ Get info about all availible process configurations. Each record
+        """ Get info about all available process configurations. Each struct
         represents a single process (i.e. groups get flattened).
 
-        @return array result  An array of process config info records
+        @return array result  An array of process config info structs
         """
         self._update('getAllConfigInfo')
 
@@ -503,10 +503,13 @@ class SupervisorNamespaceRPCInterface:
 
         group, process = self._getGroupAndProcess(name)
 
+        if process is None:
+            raise RPCError(Faults.BAD_NAME, name)
+
         start = int(process.laststart)
         stop = int(process.laststop)
         now = int(time.time())
-        
+
         state = process.get_state()
         spawnerr = process.spawnerr or ''
         exitstatus = process.exitstatus or 0
@@ -528,7 +531,7 @@ class SupervisorNamespaceRPCInterface:
             'stderr_logfile':stderr_logfile,
             'pid':process.pid,
             }
-        
+
         description = self._interpretProcessInfo(info)
         info['description'] = description
         return info
@@ -590,7 +593,7 @@ class SupervisorNamespaceRPCInterface:
         group, process = self._getGroupAndProcess(name)
 
         logfile = getattr(process.config, '%s_logfile' % channel)
-        
+
         if logfile is None or not os.path.exists(logfile):
             return ['', 0, False]
 
@@ -601,7 +604,7 @@ class SupervisorNamespaceRPCInterface:
         Provides a more efficient way to tail the (stdout) log than
         readProcessStdoutLog().  Use readProcessStdoutLog() to read
         chunks and tailProcessStdoutLog() to tail.
-        
+
         Requests (length) bytes from the (name)'s log, starting at
         (offset).  If the total log size is greater than (offset +
         length), the overflow flag is set and the (offset) is
@@ -625,7 +628,7 @@ class SupervisorNamespaceRPCInterface:
         Provides a more efficient way to tail the (stderr) log than
         readProcessStderrLog().  Use readProcessStderrLog() to read
         chunks and tailProcessStderrLog() to tail.
-        
+
         Requests (length) bytes from the (name)'s log, starting at
         (offset).  If the total log size is greater than (offset +
         length), the overflow flag is set and the (offset) is
@@ -703,7 +706,7 @@ class SupervisorNamespaceRPCInterface:
                 return NOT_DONE_YET
 
             return results
-        
+
         clearall.delay = 0.05
         clearall.rpcinterface = self
         return clearall # deferred
@@ -713,8 +716,8 @@ class SupervisorNamespaceRPCInterface:
         If non-7-bit data is sent (unicode), it is encoded to utf-8
         before being sent to the process' stdin.  If chars is not a
         string or is not unicode, raise INCORRECT_PARAMETERS.  If the
-        process is not running, raise NOT_RUNNING.  If the process' 
-        stdin cannot accept input (e.g. it was closed by the child 
+        process is not running, raise NOT_RUNNING.  If the process'
+        stdin cannot accept input (e.g. it was closed by the child
         process), raise NO_FILE.
 
         @param string name        The process name to send to (or 'group:name')
@@ -748,9 +751,9 @@ class SupervisorNamespaceRPCInterface:
         return True
 
     def sendRemoteCommEvent(self, type, data):
-        """ Send an event that will be received by event listener 
+        """ Send an event that will be received by event listener
         subprocesses subscribing to the RemoteCommunicationEvent.
-        
+
         @param  string  type  String for the "type" key in the event header
         @param  string  data  Data for the event body
         @return boolean       Always return True unless error

@@ -19,6 +19,7 @@ from supervisor.tests.base import DummyFCGIProcessGroup
 from supervisor.tests.base import DummySocketManager
 
 from supervisor.process import Subprocess
+from supervisor.options import BadCommand
 
 class SubprocessTests(unittest.TestCase):
     def _getTargetClass(self):
@@ -75,7 +76,7 @@ class SubprocessTests(unittest.TestCase):
         instance.reopenlogs()
         self.assertEqual(instance.dispatchers[0].logs_reopened, True)
         self.assertEqual(instance.dispatchers[1].logs_reopened, False)
-        
+
     def test_removelogs(self):
         options = DummyOptions()
         config = DummyPConfig(options, 'test', '/test')
@@ -97,7 +98,25 @@ class SubprocessTests(unittest.TestCase):
         instance.drain()
         self.assertTrue(instance.dispatchers[0].read_event_handled)
         self.assertTrue(instance.dispatchers[1].write_event_handled)
-        
+
+    def test_get_execv_args_bad_command_extraquote(self):
+        options = DummyOptions()
+        config = DummyPConfig(options, 'extraquote', 'extraquote"')
+        instance = self._makeOne(config)
+        self.assertRaises(BadCommand, instance.get_execv_args)
+
+    def test_get_execv_args_bad_command_empty(self):
+        options = DummyOptions()
+        config = DummyPConfig(options, 'empty', '')
+        instance = self._makeOne(config)
+        self.assertRaises(BadCommand, instance.get_execv_args)
+
+    def test_get_execv_args_bad_command_whitespaceonly(self):
+        options = DummyOptions()
+        config = DummyPConfig(options, 'whitespaceonly', ' \t ')
+        instance = self._makeOne(config)
+        self.assertRaises(BadCommand, instance.get_execv_args)
+
     def test_get_execv_args_abs_missing(self):
         options = DummyOptions()
         config = DummyPConfig(options, 'notthere', '/notthere')
@@ -305,16 +324,20 @@ class SubprocessTests(unittest.TestCase):
         self.assertEqual(options.pgrp_set, True)
         self.assertEqual(len(options.duped), 3)
         self.assertEqual(len(options.fds_closed), options.minfds - 3)
-        self.assertEqual(options.written, {})
         self.assertEqual(options.privsdropped, 1)
         self.assertEqual(options.execv_args,
                          ('/good/filename', ['/good/filename']) )
-        self.assertEqual(options._exitcode, 127)
+        self.assertEqual(options.execve_called, True)
+        # if the real execve() succeeds, the code that writes the
+        # "was not spawned" message won't be reached.  this assertion
+        # is to test that no other errors were written.
+        self.assertEqual(options.written,
+             {2: "supervisor: child process was not spawned\n"})
 
     def test_spawn_as_child_setuid_fail(self):
         options = DummyOptions()
         options.forkpid = 0
-        options.setuid_msg = 'screwed'
+        options.setuid_msg = 'failure reason'
         config = DummyPConfig(options, 'good', '/good/filename', uid=1)
         instance = self._makeOne(config)
         result = instance.spawn()
@@ -325,10 +348,10 @@ class SubprocessTests(unittest.TestCase):
         self.assertEqual(len(options.duped), 3)
         self.assertEqual(len(options.fds_closed), options.minfds - 3)
         self.assertEqual(options.written,
-             {2: 'supervisor: error trying to setuid to 1 (screwed)\n'})
+             {2: "supervisor: couldn't setuid to 1: failure reason\n"
+                 "supervisor: child process was not spawned\n"})
         self.assertEqual(options.privsdropped, None)
-        self.assertEqual(options.execv_args,
-                         ('/good/filename', ['/good/filename']) )
+        self.assertEqual(options.execve_called, False)
         self.assertEqual(options._exitcode, 127)
 
     def test_spawn_as_child_cwd_ok(self):
@@ -344,11 +367,15 @@ class SubprocessTests(unittest.TestCase):
         self.assertEqual(options.pgrp_set, True)
         self.assertEqual(len(options.duped), 3)
         self.assertEqual(len(options.fds_closed), options.minfds - 3)
-        self.assertEqual(options.written, {})
         self.assertEqual(options.execv_args,
                          ('/good/filename', ['/good/filename']) )
-        self.assertEqual(options._exitcode, 127)
         self.assertEqual(options.changed_directory, True)
+        self.assertEqual(options.execve_called, True)
+        # if the real execve() succeeds, the code that writes the
+        # "was not spawned" message won't be reached.  this assertion
+        # is to test that no other errors were written.
+        self.assertEqual(options.written,
+             {2: "supervisor: child process was not spawned\n"})
 
     def test_spawn_as_child_sets_umask(self):
         options = DummyOptions()
@@ -357,11 +384,15 @@ class SubprocessTests(unittest.TestCase):
         instance = self._makeOne(config)
         result = instance.spawn()
         self.assertEqual(result, None)
-        self.assertEqual(options.written, {})
         self.assertEqual(options.execv_args,
                          ('/good/filename', ['/good/filename']) )
-        self.assertEqual(options._exitcode, 127)
         self.assertEqual(options.umaskset, 002)
+        self.assertEqual(options.execve_called, True)
+        # if the real execve() succeeds, the code that writes the
+        # "was not spawned" message won't be reached.  this assertion
+        # is to test that no other errors were written.
+        self.assertEqual(options.written,
+             {2: "supervisor: child process was not spawned\n"})
 
     def test_spawn_as_child_cwd_fail(self):
         options = DummyOptions()
@@ -378,10 +409,12 @@ class SubprocessTests(unittest.TestCase):
         self.assertEqual(len(options.duped), 3)
         self.assertEqual(len(options.fds_closed), options.minfds - 3)
         self.assertEqual(options.execv_args, None)
-        self.assertEqual(options.written,
-                         {2: "couldn't chdir to /tmp: ENOENT\n"})
+        out = {2: "supervisor: couldn't chdir to /tmp: ENOENT\n"
+                  "supervisor: child process was not spawned\n"}
+        self.assertEqual(options.written, out)
         self.assertEqual(options._exitcode, 127)
         self.assertEqual(options.changed_directory, False)
+        self.assertEqual(options.execve_called, False)
 
     def test_spawn_as_child_execv_fail_oserror(self):
         options = DummyOptions()
@@ -396,8 +429,9 @@ class SubprocessTests(unittest.TestCase):
         self.assertEqual(options.pgrp_set, True)
         self.assertEqual(len(options.duped), 3)
         self.assertEqual(len(options.fds_closed), options.minfds - 3)
-        self.assertEqual(options.written,
-                         {2: "couldn't exec /good/filename: EPERM\n"})
+        out = {2: "supervisor: couldn't exec /good/filename: EPERM\n"
+                  "supervisor: child process was not spawned\n"}
+        self.assertEqual(options.written, out)
         self.assertEqual(options.privsdropped, None)
         self.assertEqual(options._exitcode, 127)
 
@@ -415,7 +449,8 @@ class SubprocessTests(unittest.TestCase):
         self.assertEqual(len(options.duped), 3)
         self.assertEqual(len(options.fds_closed), options.minfds - 3)
         msg = options.written[2] # dict, 2 is fd #
-        self.failUnless(msg.startswith("couldn't exec /good/filename:"))
+        head = "supervisor: couldn't exec /good/filename:"
+        self.failUnless(msg.startswith(head))
         self.failUnless("exceptions.RuntimeError" in msg)
         self.assertEqual(options.privsdropped, None)
         self.assertEqual(options._exitcode, 127)
@@ -466,11 +501,15 @@ class SubprocessTests(unittest.TestCase):
         self.assertEqual(options.pgrp_set, True)
         self.assertEqual(len(options.duped), 2)
         self.assertEqual(len(options.fds_closed), options.minfds - 3)
-        self.assertEqual(options.written, {})
         self.assertEqual(options.privsdropped, 1)
         self.assertEqual(options.execv_args,
                          ('/good/filename', ['/good/filename']) )
-        self.assertEqual(options._exitcode, 127)
+        self.assertEqual(options.execve_called, True)
+        # if the real execve() succeeds, the code that writes the
+        # "was not spawned" message won't be reached.  this assertion
+        # is to test that no other errors were written.
+        self.assertEqual(options.written,
+             {2: "supervisor: child process was not spawned\n"})
 
     def test_spawn_as_parent(self):
         options = DummyOptions()
@@ -731,6 +770,27 @@ class SubprocessTests(unittest.TestCase):
         self.assertEqual(instance.killing, 1)
         self.assertEqual(options.kills[-11], signal.SIGKILL)
         self.assertEqual(L, []) # no event because we didn't change state
+
+    def test_stopasgroup(self):
+        options = DummyOptions()
+        config = DummyPConfig(options, 'test', '/test', stopasgroup=True)
+        instance = self._makeOne(config)
+        instance.pid = 11
+        L = []
+        from supervisor.states import ProcessStates
+        from supervisor import events
+        events.subscribe(events.Event,lambda x: L.append(x))
+        instance.state = ProcessStates.RUNNING
+        instance.kill(signal.SIGTERM)
+        self.assertEqual(options.logger.data[0], 'killing test (pid 11) '
+                         'process group with signal SIGTERM')
+        self.assertEqual(instance.killing, 1)
+        self.assertEqual(options.kills[-11], signal.SIGTERM)
+        self.assertEqual(len(L), 1)
+        event = L[0]
+        self.assertEqual(event.__class__, events.ProcessStateStoppingEvent)
+        self.assertEqual(event.extra_values, [('pid', 11)])
+        self.assertEqual(event.from_state, ProcessStates.RUNNING)
 
     def test_finish(self):
         options = DummyOptions()
@@ -1200,14 +1260,14 @@ class FastCGISubprocessTests(unittest.TestCase):
         instance = self._makeOne(config)
         instance.group = DummyProcessGroup(DummyPGroupConfig(options))
         self.assertRaises(NotImplementedError, instance.spawn)
-        
+
     def test_prepare_child_fds(self):
         options = DummyOptions()
         options.forkpid = 0
         config = DummyPConfig(options, 'good', '/good/filename', uid=1)
         instance = self._makeOne(config)
         sock_config = DummySocketConfig(7)
-        gconfig = DummyFCGIGroupConfig(options, 'whatever', 999, None, 
+        gconfig = DummyFCGIGroupConfig(options, 'whatever', 999, None,
                                        sock_config)
         instance.group = DummyFCGIProcessGroup(gconfig)
         result = instance.spawn()
@@ -1225,7 +1285,7 @@ class FastCGISubprocessTests(unittest.TestCase):
         config.redirect_stderr = True
         instance = self._makeOne(config)
         sock_config = DummySocketConfig(13)
-        gconfig = DummyFCGIGroupConfig(options, 'whatever', 999, None, 
+        gconfig = DummyFCGIGroupConfig(options, 'whatever', 999, None,
                                        sock_config)
         instance.group = DummyFCGIProcessGroup(gconfig)
         result = instance.spawn()
@@ -1233,19 +1293,19 @@ class FastCGISubprocessTests(unittest.TestCase):
         self.assertEqual(len(options.duped), 2)
         self.assertEqual(options.duped[13], 0)
         self.assertEqual(len(options.fds_closed), options.minfds - 3)
-        
+
     def test_before_spawn_gets_socket_ref(self):
         options = DummyOptions()
         config = DummyPConfig(options, 'good', '/good/filename', uid=1)
         instance = self._makeOne(config)
         sock_config = DummySocketConfig(7)
-        gconfig = DummyFCGIGroupConfig(options, 'whatever', 999, None, 
+        gconfig = DummyFCGIGroupConfig(options, 'whatever', 999, None,
                                        sock_config)
         instance.group = DummyFCGIProcessGroup(gconfig)
         self.assertTrue(instance.fcgi_sock is None)
         instance.before_spawn()
         self.assertFalse(instance.fcgi_sock is None)
-        
+
     def test_after_finish_removes_socket_ref(self):
         options = DummyOptions()
         config = DummyPConfig(options, 'good', '/good/filename', uid=1)
@@ -1253,7 +1313,7 @@ class FastCGISubprocessTests(unittest.TestCase):
         instance.fcgi_sock = 'hello'
         instance.after_finish()
         self.assertTrue(instance.fcgi_sock is None)
-    
+
     #Patch Subprocess.finish() method for this test to verify override
     @patch.object(Subprocess, 'finish', Mock(return_value=sentinel.finish_result))
     def test_finish_override(self):
@@ -1275,7 +1335,7 @@ class FastCGISubprocessTests(unittest.TestCase):
                             'Subprocess.finish() pid arg was not passed')
         self.assertEqual(sentinel.sts, sts_arg,
                             'Subprocess.finish() sts arg was not passed')
-                            
+
     #Patch Subprocess.spawn() method for this test to verify override
     @patch.object(Subprocess, 'spawn', Mock(return_value=sentinel.ppid))
     def test_spawn_override_success(self):
@@ -1306,7 +1366,7 @@ class FastCGISubprocessTests(unittest.TestCase):
         self.assertEqual(1, instance.before_spawn.call_count,
                             'FastCGISubprocess.before_spawn() not called once')
         self.assertEqual(None, instance.fcgi_sock,
-                'FastCGISubprocess.spawn() did not remove sock ref on error')    
+                'FastCGISubprocess.spawn() did not remove sock ref on error')
 
 class ProcessGroupBaseTests(unittest.TestCase):
     def _getTargetClass(self):
@@ -1371,7 +1431,7 @@ class ProcessGroupBaseTests(unittest.TestCase):
         group.processes = { 'process1': process1, 'process2': process2 }
         result= group.get_dispatchers()
         self.assertEqual(result, {4:None, 5:None})
-        
+
     def test_reopenlogs(self):
         options = DummyOptions()
         from supervisor.states import ProcessStates
@@ -1398,7 +1458,7 @@ class ProcessGroupBaseTests(unittest.TestCase):
         options = DummyOptions()
         gconfig1 = DummyPGroupConfig(options)
         group1 = self._makeOne(gconfig1)
-        
+
         gconfig2 = DummyPGroupConfig(options)
         group2 = self._makeOne(gconfig2)
 
@@ -1434,7 +1494,7 @@ class ProcessGroupTests(ProcessGroupBaseTests):
         group.processes = {'process1': process1}
         group.transition()
         self.assertEqual(process1.transitioned, True)
-                
+
 class EventListenerPoolTests(ProcessGroupBaseTests):
     def setUp(self):
         from supervisor.events import clear
@@ -1443,7 +1503,7 @@ class EventListenerPoolTests(ProcessGroupBaseTests):
     def tearDown(self):
         from supervisor.events import clear
         clear()
-        
+
     def _getTargetClass(self):
         from supervisor.process import EventListenerPool
         return EventListenerPool
@@ -1457,9 +1517,9 @@ class EventListenerPoolTests(ProcessGroupBaseTests):
         pool = self._makeOne(gconfig)
         from supervisor import events
         self.assertEqual(len(events.callbacks), 2)
-        self.assertEqual(events.callbacks[0], 
+        self.assertEqual(events.callbacks[0],
             (EventType, pool._acceptEvent))
-        self.assertEqual(events.callbacks[1], 
+        self.assertEqual(events.callbacks[1],
             (events.EventRejectedEvent, pool.handle_rejected))
         self.assertEqual(pool.serial, -1)
 
@@ -1501,7 +1561,7 @@ class EventListenerPoolTests(ProcessGroupBaseTests):
         dummyevent.serial = 1
         pool.handle_rejected(dummyevent)
         self.assertEqual(pool.event_buffer, [dummyevent.event, None, None])
-        
+
     def test_handle_rejected_event_buffer_overflowed(self):
         options = DummyOptions()
         gconfig = DummyPGroupConfig(options)
@@ -1590,7 +1650,7 @@ class EventListenerPoolTests(ProcessGroupBaseTests):
         self.assertEqual(process1.transitioned, True)
         self.assertEqual(pool.event_buffer, [event])
         data = pool.config.options.logger.data
-    
+
     def test_transition_event_proc_not_running(self):
         options = DummyOptions()
         from supervisor.states import ProcessStates

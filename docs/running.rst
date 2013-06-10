@@ -48,13 +48,24 @@ You may start the :command:`supervisord` executable in the foreground
 by passing the ``-n`` flag on its command line.  This is useful to
 debug startup problems.
 
+.. warning::
+
+   When :program:`supervisord` starts up, it will search for its
+   configuration file in default locations *including the current working
+   directory*.  If you are security-conscious you will probably want to
+   specify a "-c" argument after the :program:`supervisord` command
+   specifying an absolute path to a configuration file to ensure that someone
+   doesn't trick you into running supervisor from within a directory that
+   contains a rogue ``supervisord.conf`` file.  A warning is emitted when
+   supervisor is started as root without this ``-c`` argument.
+
 To change the set of programs controlled by :program:`supervisord`,
 edit the :file:`supervisord.conf` file and ``kill -HUP`` or otherwise
 restart the :program:`supervisord` process.  This file has several
 example program definitions.
 
 The :command:`supervisord` command accepts a number of command-line
-options.  Each of thsese command line options overrides any equivalent
+options.  Each of these command line options overrides any equivalent
 value in the configuration file.
 
 :command:`supervisord` Command-Line Options
@@ -231,3 +242,17 @@ users and that all files installed by the supervisor package have
 your ``PYTHONPATH`` is sane and that all Python standard
 library files have adequate file permission protections.
 
+Running :program:`supervisord` automatically on startup
+--------------------------------------------------------
+
+If you are using a distribution-packaged version of Supervisor, it should
+already be integrated into the service management infrastructure of your
+distribution.
+
+There are user-contributed scripts for various operating systems at:
+https://github.com/Supervisor/initscripts
+
+There are some answers at Serverfault in case you get stuck:
+`How to automatically start supervisord on Linux (Ubuntu)`__
+
+.. __: http://serverfault.com/questions/96499/how-to-automatically-start-supervisord-on-linux-ubuntu

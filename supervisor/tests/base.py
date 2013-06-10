@@ -48,6 +48,7 @@ class DummyOptions:
         self.written = {}
         self.fds_closed = []
         self._exitcode = None
+        self.execve_called = False
         self.execv_args = None
         self.setuid_msg = None
         self.privsdropped = None
@@ -79,7 +80,7 @@ class DummyOptions:
         self.realizeargs = args
         self.realizekw = kw
 
-    def process_config_file(self, do_usage=True):
+    def process_config(self, do_usage=True):
         pass
 
     def cleanup_fds(self):
@@ -193,6 +194,7 @@ class DummyOptions:
         self._exitcode = code
 
     def execve(self, filename, argv, environment):
+        self.execve_called = True
         if self.execv_error:
             if self.execv_error == 1:
                 raise OSError(self.execv_error)
@@ -483,7 +485,7 @@ class DummyPConfig:
                  stderr_events_enabled=False,
                  stderr_logfile_backups=0, stderr_logfile_maxbytes=0,
                  redirect_stderr=False,
-                 stopsignal=None, stopwaitsecs=10, killasgroup=False,
+                 stopsignal=None, stopwaitsecs=10, stopasgroup=False, killasgroup=False,
                  exitcodes=(0,2), environment=None, serverurl=None):
         self.options = options
         self.name = name
@@ -510,6 +512,7 @@ class DummyPConfig:
             stopsignal = signal.SIGTERM
         self.stopsignal = stopsignal
         self.stopwaitsecs = stopwaitsecs
+        self.stopasgroup = stopasgroup
         self.killasgroup = killasgroup
         self.exitcodes = exitcodes
         self.environment = environment

@@ -16,6 +16,7 @@ import pkg_resources
 import select
 import glob
 import platform
+import warnings
 
 from fcntl import fcntl
 from fcntl import F_SETFL, F_GETFL
@@ -64,6 +65,7 @@ class Options:
     stderr = sys.stderr
     stdout = sys.stdout
     exit = sys.exit
+    warnings = warnings
 
     uid = gid = None
 
@@ -77,7 +79,12 @@ class Options:
     # If you want positional arguments, set this to 1 in your subclass.
     positional_args_allowed = 0
 
-    def __init__(self):
+    def __init__(self, require_configfile=True):
+        """Constructor.
+
+        Params:
+        require_configfile -- whether we should fail on no config file.
+        """
         self.names_list = []
         self.short_options = []
         self.long_options = []
@@ -86,25 +93,28 @@ class Options:
         self.required_map = {}
         self.environ_map = {}
         self.attr_priorities = {}
+        self.require_configfile = require_configfile
         self.add(None, None, "h", "help", self.help)
         self.add("configfile", None, "c:", "configuration=")
 
-    def default_configfile(self):
-        """Return the name of the found config file or raise. """
         here = os.path.dirname(os.path.dirname(sys.argv[0]))
-        paths = [os.path.join(here, 'etc', 'supervisord.conf'),
-                 os.path.join(here, 'supervisord.conf'),
-                 'supervisord.conf', 'etc/supervisord.conf',
-                 '/etc/supervisord.conf']
+        searchpaths = [os.path.join(here, 'etc', 'supervisord.conf'),
+                       os.path.join(here, 'supervisord.conf'),
+                       'supervisord.conf', 'etc/supervisord.conf',
+                       '/etc/supervisord.conf']
+        self.searchpaths = searchpaths
+
+    def default_configfile(self):
+        """Return the name of the found config file or print usage/exit."""
         config = None
-        for path in paths:
+        for path in self.searchpaths:
             if os.path.exists(path):
                 config = path
                 break
-        if config is None:
+        if config is None and self.require_configfile:
             self.usage('No config file found at default paths (%s); '
                        'use the -c option to specify a config file '
-                       'at a different path' % ', '.join(paths))
+                       'at a different path' % ', '.join(self.searchpaths))
         return config
 
     def help(self, dummy):
@@ -279,24 +289,27 @@ class Options:
                     self._set(name, value, 1)
 
         if self.configfile is None:
+            if os.getuid() == 0 and self.progname.find("supervisord") > -1: # pragma: no cover
+                self.warnings.warn(
+                    'Supervisord is running as root and it is searching '
+                    'for its configuration file in default locations '
+                    '(including its current working directory); you '
+                    'probably want to specify a "-c" argument specifying an '
+                    'absolute path to a configuration file for improved '
+                    'security.'
+                    )
+
             self.configfile = self.default_configfile()
 
-        self.process_config_file()
+        self.process_config()
 
-    def process_config_file(self, do_usage=True):
-        """Process config file."""
-        if not hasattr(self.configfile, 'read'):
-            self.here = os.path.abspath(os.path.dirname(self.configfile))
-            set_here(self.here)
-        try:
-            self.read_config(self.configfile)
-        except ValueError, msg:
-            if do_usage:
-                # if this is not called from an RPC method, run usage and exit.
-                self.usage(str(msg))
-            else:
-                # if this is called from an RPC method, raise an error
-                raise ValueError(msg)
+    def process_config(self, do_usage=True):
+        """Process configuration data structure.
+        
+        This includes reading config file if necessary, setting defaults etc.
+        """
+        if self.configfile:
+            self.process_config_file(do_usage)
 
         # Copy config options to attributes of self.  This only fills
         # in options that aren't already set from the command line.
@@ -320,6 +333,21 @@ class Options:
         for name, message in self.required_map.items():
             if getattr(self, name) is None:
                 self.usage(message)
+
+    def process_config_file(self, do_usage):
+        # Process config file
+        if not hasattr(self.configfile, 'read'):
+            self.here = os.path.abspath(os.path.dirname(self.configfile))
+            set_here(self.here)
+        try:
+            self.read_config(self.configfile)
+        except ValueError, msg:
+            if do_usage:
+                # if this is not called from an RPC method, run usage and exit.
+                self.usage(str(msg))
+            else:
+                # if this is called from an RPC method, raise an error
+                raise ValueError(msg)
 
     def get_plugins(self, parser, factory_key, section_prefix):
         factories = []
@@ -421,9 +449,10 @@ class ServerOptions(Options):
 
         # Additional checking of user option; set uid and gid
         if self.user is not None:
-            uid = name_to_uid(self.user)
-            if uid is None:
-                self.usage("No such user %s" % self.user)
+            try:
+                uid = name_to_uid(self.user)
+            except ValueError, msg:
+                self.usage(msg) # invalid user
             self.uid = uid
             self.gid = gid_for_uid(uid)
 
@@ -474,13 +503,17 @@ class ServerOptions(Options):
 
         self.identifier = section.identifier
 
-    def process_config_file(self, do_usage=True):
-        Options.process_config_file(self, do_usage=do_usage)
+    def process_config(self, do_usage=True):
+        Options.process_config(self, do_usage=do_usage)
 
         new = self.configroot.supervisord.process_group_configs
         self.process_group_configs = new
 
     def read_config(self, fp):
+        # Clear parse warnings, since we may be re-reading the
+        # config a second time after a reload.
+        self.parse_warnings = []
+
         section = self.configroot.supervisord
         if not hasattr(fp, 'read'):
             try:
@@ -651,7 +684,12 @@ class ServerOptions(Options):
             program_name = section.split(':', 1)[1]
             priority = integer(get(section, 'priority', 999))
 
-            proc_uid = name_to_uid(get(section, 'user', None))
+            # find proc_uid from "user" option
+            proc_user = get(section, 'user', None)
+            if proc_user is None:
+                proc_uid = None
+            else:
+                proc_uid = name_to_uid(proc_user)
 
             socket_owner = get(section, 'socket_owner', None)
             if socket_owner is not None:
@@ -737,16 +775,15 @@ class ServerOptions(Options):
         programs = []
         get = parser.saneget
         program_name = section.split(':', 1)[1]
-
         priority = integer(get(section, 'priority', 999))
         autostart = boolean(get(section, 'autostart', 'true'))
         autorestart = auto_restart(get(section, 'autorestart', 'unexpected'))
         startsecs = integer(get(section, 'startsecs', 1))
         startretries = integer(get(section, 'startretries', 3))
-        uid = name_to_uid(get(section, 'user', None))
         stopsignal = signal_number(get(section, 'stopsignal', 'TERM'))
         stopwaitsecs = integer(get(section, 'stopwaitsecs', 10))
-        killasgroup = boolean(get(section, 'killasgroup', 'false'))
+        stopasgroup = boolean(get(section, 'stopasgroup', 'false'))
+        killasgroup = boolean(get(section, 'killasgroup', stopasgroup))
         exitcodes = list_of_exitcodes(get(section, 'exitcodes', '0,2'))
         redirect_stderr = boolean(get(section, 'redirect_stderr','false'))
         numprocs = integer(get(section, 'numprocs', 1))
@@ -761,6 +798,13 @@ class ServerOptions(Options):
         serverurl = get(section, 'serverurl', None)
         if serverurl and serverurl.strip().upper() == 'AUTO':
             serverurl = None
+
+        # find uid from "user" option
+        user = get(section, 'user', None)
+        if user is None:
+            uid = None
+        else:
+            uid = name_to_uid(user)
 
         umask = get(section, 'umask', None)
         if umask is not None:
@@ -778,6 +822,10 @@ class ServerOptions(Options):
                 raise ValueError(
                     '%(process_num) must be present within process_name when '
                     'numprocs > 1')
+                    
+        if stopasgroup and not killasgroup:
+            raise ValueError("Cannot set stopasgroup=true and killasgroup=false")
+
         host_node_name = platform.node()
         for process_num in range(numprocs_start, numprocs + numprocs_start):
             expansions = {'here':self.here,
@@ -841,6 +889,7 @@ class ServerOptions(Options):
                 stderr_logfile_maxbytes=logfiles['stderr_logfile_maxbytes'],
                 stopsignal=stopsignal,
                 stopwaitsecs=stopwaitsecs,
+                stopasgroup=stopasgroup,
                 killasgroup=killasgroup,
                 exitcodes=exitcodes,
                 redirect_stderr=redirect_stderr,
@@ -1122,8 +1171,8 @@ class ServerOptions(Options):
         # Drop root privileges if we have them
         if user is None:
             return "No user specified to setuid to!"
-        if os.getuid() != 0:
-            return "Can't drop privilege as nonroot user"
+
+        # get uid for user, which can be a number or username
         try:
             uid = int(user)
         except ValueError:
@@ -1137,15 +1186,35 @@ class ServerOptions(Options):
                 pwrec = pwd.getpwuid(uid)
             except KeyError:
                 return "Can't find uid %r" % uid
+
+        current_uid = os.getuid()
+
+        if current_uid == uid:
+            # do nothing and return successfully if the uid is already the
+            # current one.  this allows a supervisord running as an
+            # unprivileged user "foo" to start a process where the config
+            # has "user=foo" (same user) in it.
+            return
+
+        if current_uid != 0:
+            return "Can't drop privilege as nonroot user"
+
+        gid = pwrec[3]
         if hasattr(os, 'setgroups'):
             user = pwrec[0]
             groups = [grprec[2] for grprec in grp.getgrall() if user in
                       grprec[3]]
+
+            # always put our primary gid first in this list, otherwise we can
+            # lose group info since sometimes the first group in the setgroups
+            # list gets overwritten on the subsequent setgid call (at least on 
+            # freebsd 9 with python 2.7 - this will be safe though for all unix
+            # /python version combos)
+            groups.insert(0, gid)
             try:
                 os.setgroups(groups)
             except OSError:
                 return 'Could not set groups of effective user'
-        gid = pwrec[3]
         try:
             os.setgid(gid)
         except OSError:
@@ -1398,16 +1467,21 @@ class ClientOptions(Options):
     history_file = None
 
     def __init__(self):
-        Options.__init__(self)
+        Options.__init__(self, require_configfile=False)
         self.configroot = Dummy()
         self.configroot.supervisorctl = Dummy()
         self.configroot.supervisorctl.interactive = None
-        self.configroot.supervisorctl.prompt = None
+        self.configroot.supervisorctl.prompt = 'supervisor'
         self.configroot.supervisorctl.serverurl = None
         self.configroot.supervisorctl.username = None
         self.configroot.supervisorctl.password = None
         self.configroot.supervisorctl.history_file = None
 
+        from supervisor.supervisorctl import DefaultControllerPlugin
+        default_factory = ('default', DefaultControllerPlugin, {})
+        # we always add the default factory. If you want to a supervisorctl
+        # without the default plugin, please write your own supervisorctl.
+        self.plugin_factories = [default_factory]
 
         self.add("interactive", "supervisorctl.interactive", "i",
                  "interactive", flag=1, default=0)
@@ -1444,10 +1518,13 @@ class ClientOptions(Options):
             path = normalize_path(path)
             serverurl = 'unix://%s' % path
         section.serverurl = serverurl
-        section.prompt = config.getdefault('prompt', 'supervisor')
-        section.username = config.getdefault('username', None)
-        section.password = config.getdefault('password', None)
-        history_file = config.getdefault('history_file', None)
+
+        # The defaults used below are really set in __init__ (since
+        # section==self.configroot.supervisorctl)
+        section.prompt = config.getdefault('prompt', section.prompt)
+        section.username = config.getdefault('username', section.username)
+        section.password = config.getdefault('password', section.password)
+        history_file = config.getdefault('history_file', section.history_file)
 
         if history_file:
             history_file = normalize_path(history_file)
@@ -1457,16 +1534,11 @@ class ClientOptions(Options):
             section.history_file = None
             self.history_file = None
 
-        from supervisor.supervisorctl import DefaultControllerPlugin
-        self.plugin_factories = self.get_plugins(
+        self.plugin_factories += self.get_plugins(
             config,
             'supervisor.ctl_factory',
             'ctlplugin:'
             )
-        default_factory = ('default', DefaultControllerPlugin, {})
-        # if you want to a supervisorctl without the default plugin,
-        # please write your own supervisorctl.
-        self.plugin_factories.insert(0, default_factory)
 
         return section
 
@@ -1551,7 +1623,7 @@ class ProcessConfig(Config):
         'stderr_logfile', 'stderr_capture_maxbytes',
         'stderr_logfile_backups', 'stderr_logfile_maxbytes',
         'stderr_events_enabled',
-        'stopsignal', 'stopwaitsecs', 'killasgroup',
+        'stopsignal', 'stopwaitsecs', 'stopasgroup', 'killasgroup',
         'exitcodes', 'redirect_stderr' ]
     optional_param_names = [ 'environment', 'serverurl' ]
 
@@ -1924,6 +1996,9 @@ def split_namespec(namespec):
 
 class ProcessException(Exception):
     """ Specialized exceptions used when attempting to start a process """
+
+class BadCommand(ProcessException):
+    """ Indicates the command could not be parsed properly. """
 
 class NotExecutable(ProcessException):
     """ Indicates that the filespec cannot be executed because its path

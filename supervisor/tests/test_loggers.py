@@ -3,6 +3,9 @@ import unittest
 import tempfile
 import shutil
 import os
+import syslog
+
+import mock
 
 from supervisor.tests.base import DummyStream
 
@@ -51,7 +54,7 @@ class FileHandlerTests(HandlerTests, unittest.TestCase):
         handler.stream = DummyStream()
         handler.close()
         self.assertEqual(handler.stream.closed, True)
-        
+
     def test_close_raises(self):
         handler = self._makeOne(self.filename)
         handler.stream = DummyStream(OSError)
@@ -86,7 +89,7 @@ class FileHandlerTests(HandlerTests, unittest.TestCase):
         self.assertFalse(os.path.exists(self.filename), self.filename)
         handler.remove() # should not raise
         self.assertFalse(os.path.exists(self.filename), self.filename)
-        
+
     def test_remove_raises(self):
         handler = self._makeOne(self.filename)
         os.remove(self.filename)
@@ -100,7 +103,7 @@ class FileHandlerTests(HandlerTests, unittest.TestCase):
         handler.emit(record)
         content = open(self.filename, 'r').read()
         self.assertEqual(content, 'hello!')
-        
+
     def test_emit_unicode_noerror(self):
         handler = self._makeOne(self.filename)
         record = self._makeLogRecord(u'fi\xed')
@@ -124,7 +127,7 @@ class FileHandlerTests(HandlerTests, unittest.TestCase):
                         dummy_stderr.written)
 
 class RotatingFileHandlerTests(FileHandlerTests):
-    
+
     def _getTargetClass(self):
         from supervisor.loggers import RotatingFileHandler
         return RotatingFileHandler
@@ -134,41 +137,6 @@ class RotatingFileHandlerTests(FileHandlerTests):
         self.assertEqual(handler.mode, 'a')
         self.assertEqual(handler.maxBytes, 512*1024*1024)
         self.assertEqual(handler.backupCount, 10)
-
-    def test_emit_tracks_correct_file_for_multiple_handlers(self):
-        """
-        Rollovers should roll for all handlers of the same file.
-        
-        When more than one process logs to a singlefile, we want to
-        make sure that files get rotated properly.
-
-        When the file rotates, all handlers should start writing to
-        the file specified by handler.baseFilename.
-        """
-        handler1 = self._makeOne(self.filename, maxBytes=10, backupCount=2)
-        handler2 = self._makeOne(self.filename, maxBytes=10, backupCount=2)
-        record = self._makeLogRecord('a' * 4)
-        handler1.emit(record) #4 bytes
-        handler2.emit(record) #8 bytes
-        self.assertFalse(os.path.exists(self.filename + '.1'))
-        handler1.emit(record) #12 bytes
-        self.assertTrue(os.path.exists(self.filename + '.1'))
-        self.assertTrue(handler1.stream == handler2.stream)
-        new_record = self._makeLogRecord("NEW") 
-        handler2.emit(new_record) 
-        self.assertTrue(open(self.filename).read().endswith("NEW"))
-        handler1.emit(record)
-        self.assertTrue(open(self.filename).read().endswith("aaaa"))
-        handler2.emit(new_record)
-        self.assertTrue(open(self.filename).read().endswith(""))
-
-    def test_reopen_raises(self):
-        handler = self._makeOne(self.filename)
-        stream = DummyStream()
-        handler.baseFilename = os.path.join(self.basedir, 'notthere', 'a.log')
-        handler.open_streams[handler.baseFilename] = stream
-        self.assertRaises(IOError, handler.reopen)
-        self.assertEqual(stream.closed, True)
 
     def test_emit_does_rollover(self):
         handler = self._makeOne(self.filename, maxBytes=10, backupCount=2)
@@ -265,7 +233,7 @@ class LoggerTests(unittest.TestCase):
         logger.level = LevelsByName.DEBG
         logger.trace('hello')
         self.assertEqual(len(handler.records), 1)
-        
+
     def test_debug(self):
         from supervisor.loggers import LevelsByName
         handler = DummyHandler(LevelsByName.DEBG)
@@ -320,6 +288,56 @@ class LoggerTests(unittest.TestCase):
         logger.close()
         self.assertEqual(handler.closed, True)
 
+class MockSysLog(mock.Mock):
+    def __call__(self, *args, **kwargs):
+        message = args[-1]
+        if sys.version_info < (3, 0) and isinstance(message, unicode):
+            # Python 2.x raises a UnicodeEncodeError when attempting to
+            #  transmit unicode characters that don't encode in the
+            #  default encoding.
+            message.encode()
+        super(MockSysLog, self).__call__(*args, **kwargs)
+
+class SyslogHandlerTests(HandlerTests, unittest.TestCase):
+    def setUp(self):
+        pass
+
+    def tearDown(self):
+        pass
+
+    def _getTargetClass(self):
+        return __import__('supervisor.loggers').loggers.SyslogHandler
+
+    def _makeOne(self):
+        return self._getTargetClass()()
+
+    @mock.patch('syslog.syslog', MockSysLog())
+    def test_emit_ascii_noerror(self):
+        handler = self._makeOne()
+        record = self._makeLogRecord('hello!')
+        handler.emit(record)
+        syslog.syslog.assert_called_with('hello!')
+
+    @mock.patch('syslog.syslog', MockSysLog())
+    def test_close(self):
+        handler = self._makeOne()
+        handler.close()  # no-op for syslog
+
+    @mock.patch('syslog.syslog', MockSysLog())
+    def test_reopen(self):
+        handler = self._makeOne()
+        handler.reopen()  # no-op for syslog
+
+    @mock.patch('syslog.syslog', MockSysLog())
+    def test_emit_unicode_noerror(self):
+        handler = self._makeOne()
+        record = self._makeLogRecord(u'fi\xed')
+        handler.emit(record)
+        if sys.version_info < (3, 0):
+            syslog.syslog.assert_called_with('fi\xc3\xad')
+        else:
+            syslog.syslog.assert_called_with(u'fi\xed')
+
 class DummyHandler:
     close = False
     def __init__(self, level):
@@ -330,10 +348,8 @@ class DummyHandler:
     def close(self):
         self.closed = True
 
-
 def test_suite():
     return unittest.findTestCases(sys.modules[__name__])
 
 if __name__ == '__main__':
     unittest.main(defaultTest='test_suite')
-

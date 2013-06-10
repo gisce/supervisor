@@ -13,6 +13,12 @@ import sys
 import time
 import traceback
 
+try:
+    import syslog
+except ImportError:
+    # only required when 'syslog' is specified as the log filename
+    pass
+
 class LevelsByName:
     CRIT = 50   # messages that probably require immediate user attention
     ERRO = 40   # messages that indicate a potentially ignorable error condition
@@ -44,7 +50,7 @@ def getLevelNumByDescription(description):
     num = getattr(LevelsByDescription, description, None)
     return num
 
-class Handler(object):
+class Handler:
     fmt = '%(message)s'
     level = LevelsByName.INFO
     def setFormat(self, fmt):
@@ -87,6 +93,7 @@ class Handler(object):
 class FileHandler(Handler):
     """File handler which supports reopening of logs.
     """
+
     def __init__(self, filename, mode="a"):
         self.stream = open(filename, mode)
         self.baseFilename = filename
@@ -106,7 +113,7 @@ class FileHandler(Handler):
 class StreamHandler(Handler):
     def __init__(self, strm=None):
         self.stream = strm
-        
+
     def remove(self):
         if hasattr(self.stream, 'clear'):
             self.stream.clear()
@@ -136,11 +143,8 @@ class BoundIO:
 
     def clear(self):
         self.buf = ''
-            
+
 class RotatingFileHandler(FileHandler):
-
-    open_streams = {}
-
     def __init__(self, filename, mode='a', maxBytes=512*1024*1024,
                  backupCount=10):
         """
@@ -165,37 +169,11 @@ class RotatingFileHandler(FileHandler):
         """
         if maxBytes > 0:
             mode = 'a' # doesn't make sense otherwise!
-        self.mode = mode
-        self.baseFilename = filename
-        self.stream = self.stream or open(filename, mode)
-
+        FileHandler.__init__(self, filename, mode)
         self.maxBytes = maxBytes
         self.backupCount = backupCount
         self.counter = 0
         self.every = 10
-
-    class _stream(object):
-        """
-        Descriptor for managing open filehandles so that only one
-        filehandle per file path ever receives logging.
-        """
-        def __get__(self, obj, objtype):
-            """
-            Return open filehandle or None
-            """
-            return objtype.open_streams.get(obj.baseFilename)
-
-        def __set__(self, obj, stream):
-            """
-            Set open filehandle for filename defined on the
-            RotatingFileHandler
-            """
-            obj.open_streams[obj.baseFilename] = stream        
-
-    stream = _stream()
-
-    def close(self):
-        if self.stream: self.stream.close()
 
     def emit(self, record):
         """
@@ -285,11 +263,11 @@ class Logger:
     def trace(self, msg, **kw):
         if LevelsByName.TRAC >= self.level:
             self.log(LevelsByName.TRAC, msg, **kw)
-    
+
     def debug(self, msg, **kw):
         if LevelsByName.DEBG >= self.level:
             self.log(LevelsByName.DEBG, msg, **kw)
-    
+
     def info(self, msg, **kw):
         if LevelsByName.INFO >= self.level:
             self.log(LevelsByName.INFO, msg, **kw)
@@ -318,19 +296,46 @@ class Logger:
     def getvalue(self):
         raise NotImplementedError
 
+class SyslogHandler(Handler):
+    def __init__(self):
+        assert 'syslog' in globals(), "Syslog module not present"
+
+    def close(self):
+        pass
+
+    def reopen(self):
+        pass
+
+    def emit(self, record):
+        try:
+            params = record.asdict()
+            message = params['message']
+            for line in message.rstrip('\n').split('\n'):
+                params['message'] = line
+                msg = self.fmt % params
+                try:
+                    syslog.syslog(msg)
+                except UnicodeError:
+                    syslog.syslog(msg.encode("UTF-8"))
+        except:
+            self.handleError(record)
+
 def getLogger(filename, level, fmt, rotating=False, maxbytes=0, backups=0,
               stdout=False):
 
     handlers = []
 
     logger = Logger(level)
-    
+
     if filename is None:
         if not maxbytes:
             maxbytes = 1<<21 #2MB
         io = BoundIO(maxbytes)
         handlers.append(StreamHandler(io))
         logger.getvalue = io.getvalue
+
+    elif filename == 'syslog':
+        handlers.append(SyslogHandler())
 
     else:
         if rotating is False:

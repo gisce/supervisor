@@ -1,6 +1,6 @@
 ##############################################################################
 #
-# Copyright (c) 2006-2012 Agendaless Consulting and Contributors.
+# Copyright (c) 2006-2013 Agendaless Consulting and Contributors.
 # All Rights Reserved.
 #
 # This software is subject to the provisions of the BSD-like license at
@@ -70,7 +70,7 @@ dist = setup(
     packages = find_packages(),
     install_requires = requires,
     extras_require = {'iterparse':['cElementTree >= 1.0.2']},
-    tests_require = requires + ['mock >= 0.5.0'],
+    tests_require = ['mock >= 0.5.0'],
     include_package_data = True,
     zip_safe = False,
     namespace_packages = ['supervisor'],
