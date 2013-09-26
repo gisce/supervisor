@@ -24,6 +24,7 @@ from fcntl import F_SETFL, F_GETFL
 
 from supervisor.medusa import asyncore_25 as asyncore
 
+from supervisor.datatypes import process_or_group_name
 from supervisor.datatypes import boolean
 from supervisor.datatypes import integer
 from supervisor.datatypes import name_to_uid
@@ -123,10 +124,10 @@ class Options:
 
         Occurrences of "%s" in are replaced by self.progname.
         """
-        help = self.doc
+        help = self.doc + "\n"
         if help.find("%s") > 0:
             help = help.replace("%s", self.progname)
-        print help,
+        self.stdout.write(help)
         self.exit(0)
 
     def usage(self, msg):
@@ -306,7 +307,7 @@ class Options:
 
     def process_config(self, do_usage=True):
         """Process configuration data structure.
-        
+
         This includes reading config file if necessary, setting defaults etc.
         """
         if self.configfile:
@@ -440,10 +441,12 @@ class ServerOptions(Options):
         self.stdout.write('%s\n' % VERSION)
         self.exit(0)
 
-    def getLogger(self, filename, level, fmt, rotating=False, maxbytes=0,
-                  backups=0, stdout=False):
-        return loggers.getLogger(filename, level, fmt, rotating, maxbytes,
-                                 backups, stdout)
+    def getLogger(self, *args, **kwargs):
+        """
+        A proxy to loggers.getLogger so the options might customize log setup.
+        Used by tests to mock log setup.
+        """
+        return loggers.getLogger(*args, **kwargs)
 
     def realize(self, *arg, **kw):
         Options.realize(self, *arg, **kw)
@@ -518,10 +521,12 @@ class ServerOptions(Options):
 
         section = self.configroot.supervisord
         if not hasattr(fp, 'read'):
+            if not os.path.exists(fp):
+                raise ValueError("could not find config file %s" % fp)
             try:
                 fp = open(fp, 'r')
             except (IOError, OSError):
-                raise ValueError("could not find config file %s" % fp)
+                raise ValueError("could not read config file %s" % fp)
         parser = UnhosedConfigParser()
         try:
             parser.readfp(fp)
@@ -608,7 +613,7 @@ class ServerOptions(Options):
         for section in all_sections:
             if not section.startswith('group:'):
                 continue
-            group_name = section.split(':', 1)[1]
+            group_name = process_or_group_name(section.split(':', 1)[1])
             programs = list_of_strings(get(section, 'programs', None))
             priority = integer(get(section, 'priority', 999))
             group_processes = []
@@ -631,7 +636,7 @@ class ServerOptions(Options):
             if ( (not section.startswith('program:') )
                  or section in homogeneous_exclude ):
                 continue
-            program_name = section.split(':', 1)[1]
+            program_name = process_or_group_name(section.split(':', 1)[1])
             priority = integer(get(section, 'priority', 999))
             processes=self.processes_from_section(parser, section, program_name,
                                                   ProcessConfig)
@@ -683,7 +688,7 @@ class ServerOptions(Options):
             if ( (not section.startswith('fcgi-program:') )
                  or section in homogeneous_exclude ):
                 continue
-            program_name = section.split(':', 1)[1]
+            program_name = process_or_group_name(section.split(':', 1)[1])
             priority = integer(get(section, 'priority', 999))
 
             # find proc_uid from "user" option
@@ -776,7 +781,7 @@ class ServerOptions(Options):
             klass = ProcessConfig
         programs = []
         get = parser.saneget
-        program_name = section.split(':', 1)[1]
+        program_name = process_or_group_name(section.split(':', 1)[1])
         priority = integer(get(section, 'priority', 999))
         autostart = boolean(get(section, 'autostart', 'true'))
         autorestart = auto_restart(get(section, 'autorestart', 'unexpected'))
@@ -790,13 +795,11 @@ class ServerOptions(Options):
         redirect_stderr = boolean(get(section, 'redirect_stderr','false'))
         numprocs = integer(get(section, 'numprocs', 1))
         numprocs_start = integer(get(section, 'numprocs_start', 0))
-        process_name = get(section, 'process_name', '%(program_name)s')
         environment_str = get(section, 'environment', '')
         stdout_cmaxbytes = byte_size(get(section,'stdout_capture_maxbytes','0'))
         stdout_events = boolean(get(section, 'stdout_events_enabled','false'))
         stderr_cmaxbytes = byte_size(get(section,'stderr_capture_maxbytes','0'))
         stderr_events = boolean(get(section, 'stderr_events_enabled','false'))
-        directory = get(section, 'directory', None)
         serverurl = get(section, 'serverurl', None)
         if serverurl and serverurl.strip().upper() == 'AUTO':
             serverurl = None
@@ -817,6 +820,9 @@ class ServerOptions(Options):
             raise ValueError, (
                 'program section %s does not specify a command' % section)
 
+        process_name = process_or_group_name(
+            get(section, 'process_name', '%(program_name)s'))
+
         if numprocs > 1:
             if process_name.find('%(process_num)') == -1:
                 # process_name needs to include process_num when we
@@ -824,7 +830,7 @@ class ServerOptions(Options):
                 raise ValueError(
                     '%(process_num) must be present within process_name when '
                     'numprocs > 1')
-                    
+
         if stopasgroup and not killasgroup:
             raise ValueError("Cannot set stopasgroup=true and killasgroup=false")
 
@@ -840,6 +846,7 @@ class ServerOptions(Options):
             environment = dict_of_key_value_pairs(
                 expand(environment_str, expansions, 'environment'))
 
+            directory = get(section, 'directory', None)
             if directory:
                 directory = expand(directory, expansions, 'directory')
 
@@ -860,6 +867,10 @@ class ServerOptions(Options):
                 mb_key = '%s_logfile_maxbytes' % k
                 maxbytes = byte_size(get(section, mb_key, '50MB'))
                 logfiles[mb_key] = maxbytes
+
+                sy_key = '%s_syslog' % k
+                syslog = boolean(get(section, sy_key, False))
+                logfiles[sy_key] = syslog
 
                 if lf_val is Automatic and not maxbytes:
                     self.parse_warnings.append(
@@ -884,11 +895,13 @@ class ServerOptions(Options):
                 stdout_events_enabled = stdout_events,
                 stdout_logfile_backups=logfiles['stdout_logfile_backups'],
                 stdout_logfile_maxbytes=logfiles['stdout_logfile_maxbytes'],
+                stdout_syslog=logfiles['stdout_syslog'],
                 stderr_logfile=logfiles['stderr_logfile'],
                 stderr_capture_maxbytes = stderr_cmaxbytes,
                 stderr_events_enabled = stderr_events,
                 stderr_logfile_backups=logfiles['stderr_logfile_backups'],
                 stderr_logfile_maxbytes=logfiles['stderr_logfile_maxbytes'],
+                stderr_syslog=logfiles['stderr_syslog'],
                 stopsignal=stopsignal,
                 stopwaitsecs=stopwaitsecs,
                 stopasgroup=stopasgroup,
@@ -1217,7 +1230,7 @@ class ServerOptions(Options):
 
             # always put our primary gid first in this list, otherwise we can
             # lose group info since sometimes the first group in the setgroups
-            # list gets overwritten on the subsequent setgid call (at least on 
+            # list gets overwritten on the subsequent setgid call (at least on
             # freebsd 9 with python 2.7 - this will be safe though for all unix
             # /python version combos)
             groups.insert(0, gid)
@@ -1310,16 +1323,18 @@ class ServerOptions(Options):
 
     def make_logger(self, critical_messages, warn_messages, info_messages):
         # must be called after realize() and after supervisor does setuid()
-        format =  '%(asctime)s %(levelname)s %(message)s\n'
-        self.logger = loggers.getLogger(
+        format = '%(asctime)s %(levelname)s %(message)s\n'
+        self.logger = loggers.getLogger(self.loglevel)
+        if self.nodaemon:
+            loggers.handle_stdout(self.logger, format)
+        loggers.handle_file(
+            self.logger,
             self.logfile,
-            self.loglevel,
             format,
             rotating=True,
             maxbytes=self.logfile_maxbytes,
             backups=self.logfile_backups,
-            stdout = self.nodaemon,
-            )
+        )
         for msg in critical_messages:
             self.logger.critical(msg)
         for msg in warn_messages:
@@ -1511,10 +1526,12 @@ class ClientOptions(Options):
         section = self.configroot.supervisorctl
         if not hasattr(fp, 'read'):
             self.here = os.path.dirname(normalize_path(fp))
+            if not os.path.exists(fp):
+                raise ValueError("could not find config file %s" % fp)
             try:
                 fp = open(fp, 'r')
             except (IOError, OSError):
-                raise ValueError("could not find config file %s" % fp)
+                raise ValueError("could not read config file %s" % fp)
         config = UnhosedConfigParser()
         config.mysection = 'supervisorctl'
         config.readfp(fp)
@@ -1628,11 +1645,11 @@ class ProcessConfig(Config):
         'name', 'uid', 'command', 'directory', 'umask', 'priority',
         'autostart', 'autorestart', 'startsecs', 'startretries',
         'stdout_logfile', 'stdout_capture_maxbytes',
-        'stdout_events_enabled',
+        'stdout_events_enabled', 'stdout_syslog',
         'stdout_logfile_backups', 'stdout_logfile_maxbytes',
         'stderr_logfile', 'stderr_capture_maxbytes',
         'stderr_logfile_backups', 'stderr_logfile_maxbytes',
-        'stderr_events_enabled',
+        'stderr_events_enabled', 'stderr_syslog',
         'stopsignal', 'stopwaitsecs', 'stopasgroup', 'killasgroup',
         'exitcodes', 'redirect_stderr' ]
     optional_param_names = [ 'environment', 'serverurl' ]

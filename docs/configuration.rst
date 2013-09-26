@@ -721,7 +721,7 @@ where specified.
 ``stopasgroup``
 
   If true, the flag causes supervisor to send the stop signal to the
-  whole process group and implies ``killasgroup``=true.  This is useful
+  whole process group and implies ``killasgroup`` is true.  This is useful
   for programs, such as Flask in debug mode, that do not propagate
   stop signals to their children, leaving them orphaned.
 
@@ -844,6 +844,16 @@ where specified.
 
   *Introduced*: 3.0a7
 
+``stdout_syslog``
+
+  If true, stdout will be directed to syslog along with the process name.
+
+  *Default*: False
+
+  *Required*:  No.
+
+  *Introduced*: 3.1a1
+
 ``stderr_logfile``
 
   Put process stderr output in this file unless ``redirect_stderr`` is
@@ -910,6 +920,16 @@ where specified.
   *Required*:  No.
 
   *Introduced*: 3.0a7
+
+``stderr_syslog``
+
+  If true, stderr will be directed to syslog along with the process name.
+
+  *Default*: False
+
+  *Required*:  No.
+
+  *Introduced*: 3.1a1
 
 ``environment``
 

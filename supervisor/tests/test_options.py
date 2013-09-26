@@ -178,6 +178,47 @@ class ClientOptionsTests(unittest.TestCase):
         self.assertEqual(options.password, '123')
         self.assertEqual(options.history_file, history_file)
 
+    def test_unreadable_config_file(self):
+        # Quick and dirty way of coming up with a decent filename
+        tempf = tempfile.NamedTemporaryFile()
+        fname = tempf.name
+        tempf.close()
+        self.assertFalse(os.path.exists(fname))
+
+        instance = self._makeOne()
+        instance.stderr = StringIO()
+
+        class DummyException(Exception):
+            def __init__(self, exitcode):
+                self.exitcode = exitcode
+        def dummy_exit(self, exitcode=2):
+            # Important default exitcode=2 like sys.exit.
+            raise DummyException(exitcode)
+        instance.exit = dummy_exit
+        try:
+            instance.realize(args=['-c', fname])
+        except DummyException, e:
+            self.assertEquals(e.exitcode, 2)
+        else:
+            self.fail("expected exception")
+
+        try:
+            instance.read_config(fname)
+        except ValueError, e:
+            self.assertTrue("could not find config file" in str(e))
+        else:
+            self.fail("expected exception")
+
+        tempf = tempfile.NamedTemporaryFile()
+        os.chmod(tempf.name, 0) # Removing read perms
+        try:
+            instance.read_config(tempf.name)
+        except ValueError, e:
+            self.assertTrue("could not read config file" in str(e))
+        else:
+            self.fail("expected exception")
+        tempf.close()
+
     def test_options_unixsocket_cli(self):
         from StringIO import StringIO
         fp = StringIO('[supervisorctl]')
@@ -263,6 +304,14 @@ class ServerOptionsTests(unittest.TestCase):
         numprocs = 2
         command = /bin/cat
         autorestart=unexpected
+
+        [program:cat5]
+        priority=5
+        process_name = foo_%%(process_num)02d
+        numprocs = 2
+        numprocs_start = 1
+        command = /bin/cat
+        directory = /some/path/foo_%%(process_num)02d
         """ % {'tempdir':tempfile.gettempdir()})
 
         from supervisor import datatypes
@@ -293,7 +342,7 @@ class ServerOptionsTests(unittest.TestCase):
         self.assertEqual(options.minfds, 2048)
         self.assertEqual(options.minprocs, 300)
         self.assertEqual(options.nocleanup, True)
-        self.assertEqual(len(options.process_group_configs), 4)
+        self.assertEqual(len(options.process_group_configs), 5)
         self.assertEqual(options.environment, dict(FAKE_ENV_VAR='/some/path'))
 
         cat1 = options.process_group_configs[0]
@@ -386,6 +435,7 @@ class ServerOptionsTests(unittest.TestCase):
         self.assertEqual(proc4_a.stopsignal, signal.SIGTERM)
         self.assertEqual(proc4_a.stopasgroup, False)
         self.assertEqual(proc4_a.killasgroup, False)
+        self.assertEqual(proc4_a.directory, None)
 
         proc4_b = cat4.process_configs[1]
         self.assertEqual(proc4_b.name, 'fleeb_1')
@@ -403,6 +453,20 @@ class ServerOptionsTests(unittest.TestCase):
         self.assertEqual(proc4_b.stopsignal, signal.SIGTERM)
         self.assertEqual(proc4_b.stopasgroup, False)
         self.assertEqual(proc4_b.killasgroup, False)
+        self.assertEqual(proc4_b.directory, None)
+
+        cat5 = options.process_group_configs[4]
+        self.assertEqual(cat5.name, 'cat5')
+        self.assertEqual(cat5.priority, 5)
+        self.assertEqual(len(cat5.process_configs), 2)
+
+        proc5_a = cat5.process_configs[0]
+        self.assertEqual(proc5_a.name, 'foo_01')
+        self.assertEqual(proc5_a.directory, '/some/path/foo_01')
+
+        proc5_b = cat5.process_configs[1]
+        self.assertEqual(proc5_b.name, 'foo_02')
+        self.assertEqual(proc5_b.directory, '/some/path/foo_02')
 
         here = os.path.abspath(os.getcwd())
         self.assertEqual(instance.uid, 0)
@@ -543,6 +607,47 @@ class ServerOptionsTests(unittest.TestCase):
         instance.configfile = StringIO(text)
         instance.realize(args=[])
         self.assertFalse(old_warning in instance.parse_warnings)
+
+    def test_unreadable_config_file(self):
+        # Quick and dirty way of coming up with a decent filename
+        tempf = tempfile.NamedTemporaryFile()
+        fname = tempf.name
+        tempf.close()
+        self.assertFalse(os.path.exists(fname))
+
+        instance = self._makeOne()
+        instance.stderr = StringIO()
+
+        class DummyException(Exception):
+            def __init__(self, exitcode):
+                self.exitcode = exitcode
+        def dummy_exit(self, exitcode=2):
+            # Important default exitcode=2 like sys.exit.
+            raise DummyException(exitcode)
+        instance.exit = dummy_exit
+        try:
+            instance.realize(args=['-c', fname])
+        except DummyException, e:
+            self.assertEquals(e.exitcode, 2)
+        else:
+            self.fail("expected exception")
+
+        try:
+            instance.read_config(fname)
+        except ValueError, e:
+            self.assertTrue("could not find config file" in str(e))
+        else:
+            self.fail("expected exception")
+
+        tempf = tempfile.NamedTemporaryFile()
+        os.chmod(tempf.name, 0) # Removing read perms
+        try:
+            instance.read_config(tempf.name)
+        except ValueError, e:
+            self.assertTrue("could not read config file" in str(e))
+        else:
+            self.fail("expected exception")
+        tempf.close()
 
     def test_readFile_failed(self):
         from supervisor.options import readFile
@@ -758,6 +863,28 @@ class ServerOptionsTests(unittest.TestCase):
         expected = "/bin/foo --path='%s'" % os.environ['PATH']
         self.assertEqual(pconfigs[0].command, expected)
 
+    def test_processes_from_section_bad_program_name_spaces(self):
+        instance = self._makeOne()
+        text = lstrip("""\
+        [program:spaces are bad]
+        """)
+        from supervisor.options import UnhosedConfigParser
+        config = UnhosedConfigParser()
+        config.read_string(text)
+        self.assertRaises(ValueError, instance.processes_from_section,
+                          config, 'program:spaces are bad', None)
+
+    def test_processes_from_section_bad_program_name_colons(self):
+        instance = self._makeOne()
+        text = lstrip("""\
+        [program:colons:are:bad]
+        """)
+        from supervisor.options import UnhosedConfigParser
+        config = UnhosedConfigParser()
+        config.read_string(text)
+        self.assertRaises(ValueError, instance.processes_from_section,
+                          config, 'program:colons:are:bad', None)
+
     def test_processes_from_section_no_procnum_in_processname(self):
         instance = self._makeOne()
         text = lstrip("""\
@@ -809,6 +936,19 @@ class ServerOptionsTests(unittest.TestCase):
         self.assertRaises(ValueError, instance.processes_from_section,
                           config, 'program:foo', None)
 
+    def test_processes_from_section_bad_chars_in_process_name(self):
+        instance = self._makeOne()
+        text = lstrip("""\
+        [program:foo]
+        command = /bin/cat
+        process_name = colons:are:bad
+        """)
+        from supervisor.options import UnhosedConfigParser
+        config = UnhosedConfigParser()
+        config.read_string(text)
+        self.assertRaises(ValueError, instance.processes_from_section,
+                          config, 'program:foo', None)
+
     def test_processes_from_section_stopasgroup_implies_killasgroup(self):
         instance = self._makeOne()
         text = lstrip("""\
@@ -825,7 +965,7 @@ class ServerOptionsTests(unittest.TestCase):
         pconfig = pconfigs[0]
         self.assertEqual(pconfig.stopasgroup, True)
         self.assertEqual(pconfig.killasgroup, True)
-    
+
     def test_processes_from_section_killasgroup_mismatch_w_stopasgroup(self):
         instance = self._makeOne()
         text = lstrip("""\
@@ -1457,10 +1597,10 @@ class TestProcessConfig(unittest.TestCase):
                      'priority', 'autostart', 'autorestart',
                      'startsecs', 'startretries', 'uid',
                      'stdout_logfile', 'stdout_capture_maxbytes',
-                     'stdout_events_enabled',
+                     'stdout_events_enabled', 'stdout_syslog',
                      'stdout_logfile_backups', 'stdout_logfile_maxbytes',
                      'stderr_logfile', 'stderr_capture_maxbytes',
-                     'stderr_events_enabled',
+                     'stderr_events_enabled', 'stderr_syslog',
                      'stderr_logfile_backups', 'stderr_logfile_maxbytes',
                      'stopsignal', 'stopwaitsecs', 'stopasgroup', 'killasgroup', 'exitcodes',
                      'redirect_stderr', 'environment'):
@@ -1531,10 +1671,10 @@ class FastCGIProcessConfigTest(unittest.TestCase):
                      'priority', 'autostart', 'autorestart',
                      'startsecs', 'startretries', 'uid',
                      'stdout_logfile', 'stdout_capture_maxbytes',
-                     'stdout_events_enabled',
+                     'stdout_events_enabled', 'stdout_syslog',
                      'stdout_logfile_backups', 'stdout_logfile_maxbytes',
                      'stderr_logfile', 'stderr_capture_maxbytes',
-                     'stderr_events_enabled',
+                     'stderr_events_enabled', 'stderr_syslog',
                      'stderr_logfile_backups', 'stderr_logfile_maxbytes',
                      'stopsignal', 'stopwaitsecs', 'stopasgroup', 'killasgroup', 'exitcodes',
                      'redirect_stderr', 'environment'):
